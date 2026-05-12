@@ -1,0 +1,34 @@
+{
+  "name": "todoapplicationforcicdpipeline",
+  "version": "1.0.0",
+  "description": "Its a simple ToDo Application using react.  This will be deployable by CICD Pipeline using GitHub action.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MahmudurRahman36/ToDoApplicationForCICDPipeline.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/MahmudurRahman36/ToDoApplicationForCICDPipeline/issues"
+  },
+  "homepage": "https://github.com/MahmudurRahman36/ToDoApplicationForCICDPipeline#readme",
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.1",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "vite": "^8.0.12"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.5.0",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^4.3.0"
+  }
+}
