@@ -1,0 +1,348 @@
+name: Deploy ToDo App to AWS EC2
+
+on:
+  push:
+    branches: [ development ]
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip tests and go straight to deploy'
+        required: false
+        type: boolean
+        default: false
+      skip_health_check:
+        description: 'Skip health check after deployment'
+        required: false
+        type: boolean
+        default: false
+      force_rebuild:
+        description: 'Force Docker image rebuild (no cache)'
+        required: false
+        type: boolean
+        default: false
+
+# ─────────────────────────────────────────────────────────────
+# Global environment variables
+# App Server  : mahmud-batch11-application  (13.233.204.205)
+# Runner Server: mahmud-batch11-selfhosted-runner (65.0.94.198)
+# ─────────────────────────────────────────────────────────────
+env:
+  DEPLOY_PATH: /home/ubuntu/ToDoApplicationForCICDPipeline
+  FRONTEND_DEPLOY_PATH: /var/www/todo-app
+  DB_NAME: tododb
+  DB_USER: todo_user
+  NODE_VERSION: '20'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ═══════════════════════════════════════════════════════════
+  # JOB 1 — CI: Build & Test  (runs on self-hosted runner)
+  # ═══════════════════════════════════════════════════════════
+  build-and-test:
+    name: 🧪 Build & Test
+    runs-on: self-hosted
+    if: github.event.inputs.skip_tests != 'true'
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js v${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci
+
+      - name: 🧪 Run Tests
+        run: npm test
+
+      - name: 🏗️ Build React Application
+        run: npm run build
+
+      - name: 📊 Verify Build Output
+        run: |
+          echo "=========================================="
+          echo "Build output directory contents:"
+          echo "=========================================="
+          ls -lh dist/
+
+  # ═══════════════════════════════════════════════════════════
+  # JOB 2 — CD: Deploy to Application Server via SSH
+  # Secrets required: EC2_HOST, EC2_USER, EC2_SSH_KEY, DB_PASSWORD
+  # ═══════════════════════════════════════════════════════════
+  deploy:
+    name: 🚀 Deploy to AWS EC2
+    needs: build-and-test
+    runs-on: self-hosted
+    # Run deploy even when build-and-test is skipped via workflow_dispatch
+    if: |
+      always() &&
+      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped')
+
+    steps:
+      # ───────────────────────────────────────────────────────
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      # ───────────────────────────────────────────────────────
+      - name: 🔑 Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+          log-public-key: true
+
+      # ───────────────────────────────────────────────────────
+      - name: 🛡️ Configure SSH (disable host key checking)
+        run: |
+          mkdir -p ~/.ssh
+          cat > ~/.ssh/config <<EOF
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+          chmod 600 ~/.ssh/config
+
+      # ───────────────────────────────────────────────────────
+      - name: 🔌 Test SSH Connection
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "echo '✅ SSH connection to application server successful'"
+
+      # ───────────────────────────────────────────────────────
+      - name: 🌐 Get Runner Public IP
+        run: |
+          echo "=========================================="
+          echo "Runner Public IP Information"
+          echo "=========================================="
+          RUNNER_IP=$(curl -s http://api.ipify.org/?format=text)
+          echo "Runner Public IP: $RUNNER_IP"
+          echo "runner_ip=$RUNNER_IP" >> $GITHUB_OUTPUT
+
+      # ───────────────────────────────────────────────────────
+      - name: ⚙️ Install Prerequisites on App Server (if needed)
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << "ENDSSH"
+            set -e
+
+            echo "=========================================="
+            echo "Installing / Verifying Prerequisites"
+            echo "=========================================="
+
+            # ── Docker ──────────────────────────────────
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              sudo apt-get update -y
+              sudo apt-get install -y ca-certificates curl gnupg lsb-release
+              sudo mkdir -p /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu \
+                $(lsb_release -cs) stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+              sudo systemctl enable docker
+              sudo systemctl start docker
+              sudo usermod -aG docker $USER
+              echo "Docker installed"
+            else
+              echo "Docker $(docker --version) already installed"
+              sudo systemctl is-active docker || sudo systemctl start docker
+            fi
+
+            # ── Git ──────────────────────────────────────
+            if ! command -v git &> /dev/null; then
+              echo "Installing git..."
+              sudo apt-get install -y git
+            else
+              echo "Git $(git --version) already installed"
+            fi
+
+            echo ""
+            echo "Installed versions:"
+            echo "  Docker: $(docker --version)"
+            echo "  Docker Compose: $(docker compose version)"
+            echo "  Git: $(git --version)"
+            echo ""
+          ENDSSH
+
+      # ───────────────────────────────────────────────────────
+      - name: 🗄️ Setup PostgreSQL Database
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << "ENDSSH"
+            set -e
+
+            echo "=========================================="
+            echo "Setting up PostgreSQL Database"
+            echo "=========================================="
+
+            # PostgreSQL will run in a Docker container (defined in docker-compose.yml).
+            # Here we ensure the docker network and volume directories exist so that
+            # the container starts cleanly even on a fresh server.
+
+            # Create a persistent data directory for Postgres volume
+            mkdir -p ~/postgres_data
+            echo "Postgres data directory: ~/postgres_data  ✅"
+
+            echo "Database setup preparation completed"
+            echo ""
+          ENDSSH
+
+      # ───────────────────────────────────────────────────────
+      - name: 🗂️ Check if Deployment Exists
+        id: check_deployment
+        run: |
+          DEPLOYMENT_EXISTS=$(ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "[ -d ${{ env.DEPLOY_PATH }} ] && echo 'true' || echo 'false'")
+          echo "exists=$DEPLOYMENT_EXISTS" >> $GITHUB_OUTPUT
+          echo "Deployment directory exists: $DEPLOYMENT_EXISTS"
+
+      # ───────────────────────────────────────────────────────
+      - name: 💾 Create Backup (if deployment exists)
+        if: steps.check_deployment.outputs.exists == 'true'
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << EOF
+            mkdir -p ~/todo_deployments_backup
+            if [ -d "${{ env.DEPLOY_PATH }}" ]; then
+              echo "Creating backup of existing deployment..."
+              cp -r ${{ env.DEPLOY_PATH }} ~/todo_deployments_backup/backup_${TIMESTAMP}
+              echo "✅ Backup created at ~/todo_deployments_backup/backup_${TIMESTAMP}"
+            fi
+          EOF
+
+      # ───────────────────────────────────────────────────────
+      - name: 📂 Sync Source Files to App Server
+        run: |
+          echo "=========================================="
+          echo "Syncing source files via rsync"
+          echo "=========================================="
+          rsync -avz --delete \
+            --exclude='node_modules/' \
+            --exclude='dist/' \
+            --exclude='.git/' \
+            --exclude='SampleFiles/' \
+            -e "ssh -o StrictHostKeyChecking=no" \
+            ./ "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ env.DEPLOY_PATH }}/"
+
+      # ───────────────────────────────────────────────────────
+      - name: 🚀 Deploy Application via Docker Compose
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << "ENDSSH"
+            set -e
+
+            echo "=========================================="
+            echo "Deploying ToDo Application"
+            echo "=========================================="
+
+            cd ${{ env.DEPLOY_PATH }}
+
+            # Write runtime environment variables
+            echo "Setting up .env file..."
+            cat > .env << 'ENVEOF'
+          DB_NAME=${{ env.DB_NAME }}
+          DB_USER=${{ env.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@db:5432/${{ env.DB_NAME }}
+          NODE_ENV=production
+          ENVEOF
+
+            echo ".env written ✅"
+
+            # Stop any running containers gracefully
+            echo ""
+            echo "==> Stopping old containers..."
+            sudo docker compose down --remove-orphans || true
+
+            # Rebuild and start containers
+            echo ""
+            if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+              echo "==> Force rebuilding Docker images (no cache)..."
+              sudo docker compose build --no-cache
+            else
+              echo "==> Building Docker images..."
+              sudo docker compose build
+            fi
+
+            echo ""
+            echo "==> Starting containers..."
+            sudo docker compose up -d
+
+            echo ""
+            echo "==> Running containers:"
+            sudo docker compose ps
+
+            echo ""
+            echo "=========================================="
+            echo "Deployment Completed Successfully ✅"
+            echo "=========================================="
+            echo ""
+          ENDSSH
+
+      # ───────────────────────────────────────────────────────
+      - name: 🩺 Health Check
+        if: github.event.inputs.skip_health_check != 'true'
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << "ENDSSH"
+            echo "=========================================="
+            echo "Running Health Checks"
+            echo "=========================================="
+
+            # Wait for containers to initialise
+            echo "Waiting 10 s for services to stabilise..."
+            sleep 10
+
+            # ── Check Docker Compose services are running ──
+            echo ""
+            echo "Container status:"
+            sudo docker compose -f ${{ env.DEPLOY_PATH }}/docker-compose.yml ps
+
+            # ── Check Nginx is responding on port 80 ───────
+            echo ""
+            echo "Testing HTTP response on port 80..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:80 || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "✅ Nginx health check passed (HTTP $HTTP_CODE)"
+            else
+              echo "⚠️  Nginx returned HTTP $HTTP_CODE — checking logs..."
+              sudo docker compose -f ${{ env.DEPLOY_PATH }}/docker-compose.yml logs --tail=30 nginx || \
+              sudo docker compose -f ${{ env.DEPLOY_PATH }}/docker-compose.yml logs --tail=30 app || true
+              exit 1
+            fi
+
+            echo ""
+            echo "All health checks passed ✅"
+            echo ""
+          ENDSSH
+
+      # ───────────────────────────────────────────────────────
+      - name: 📋 Deployment Summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Repository** | ${{ github.repository }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deployed to** | ${{ secrets.EC2_HOST }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deploy path** | ${{ env.DEPLOY_PATH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Job status** | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application**: http://${{ secrets.EC2_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Health Check**: http://${{ secrets.EC2_HOST }}:80" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ **Deployment completed successfully**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Deployment failed — check the logs above for details.**" >> $GITHUB_STEP_SUMMARY
+          fi
