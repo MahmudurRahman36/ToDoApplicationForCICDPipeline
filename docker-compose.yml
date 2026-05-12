@@ -1,20 +1,36 @@
 services:
+  # React App served via Nginx
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: todo_app
     ports:
       - "80:80"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    restart: always
     environment:
       - DB_PASSWORD=${DB_PASSWORD}
 
+  # PostgreSQL Database
   db:
     image: postgres:15-alpine
+    container_name: todo_db
+    restart: always
     environment:
+      POSTGRES_USER: todo_user
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: todo_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U todo_user -d todo_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
+    driver: local

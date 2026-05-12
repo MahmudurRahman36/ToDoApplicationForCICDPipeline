@@ -1,58 +1,98 @@
 name: CI/CD Pipeline
 
+# Trigger: Runs on every push to the 'development' branch
 on:
   push:
     branches:
       - development
 
 jobs:
+  # ─────────────────────────────────────────────────
+  # JOB 1: Build & Test
+  # Runs on the self-hosted runner (mahmud-batch11-selfhosted-runner)
+  # ─────────────────────────────────────────────────
   build-and-test:
+    name: Build & Test
     runs-on: self-hosted
+
     steps:
-      - name: Checkout Code
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: 🔧 Setup Node.js v20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install Dependencies
-        run: npm install
+      - name: 📦 Install Dependencies
+        run: npm ci
 
-      - name: Run Tests
+      - name: 🧪 Run Tests
         run: npm test
 
-      - name: Build Application
+      - name: 🏗️ Build React Application
         run: npm run build
 
+      - name: 📊 Verify Build Output
+        run: |
+          echo "Build output:"
+          ls -lh dist/
+
+  # ─────────────────────────────────────────────────
+  # JOB 2: Deploy to Application Server
+  # SSH into mahmud-batch11-application and deploy via Docker Compose
+  # Secrets needed: EC2_HOST, EC2_USER, EC2_SSH_KEY, DB_PASSWORD
+  # ─────────────────────────────────────────────────
   deploy:
+    name: Deploy to AWS EC2
     needs: build-and-test
     runs-on: self-hosted
+
     steps:
-      - name: Checkout Code
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup SSH Key
+      - name: 🔑 Configure SSH Access
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Copy Files to Application Server
+      - name: 📂 Sync Files to Application Server
         run: |
-          # Create directory on remote if not exists
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "mkdir -p ~/app"
-          # Copy only necessary files for deployment
-          scp -r ./docker-compose.yml ./Dockerfile ./nginx.conf ./package.json ./package-lock.json ./src ./index.html ./vite.config.js ./tailwind.config.js ./postcss.config.js ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/app/
+          # Sync the full project source (excluding node_modules and dist)
+          rsync -avz --delete \
+            --exclude='node_modules/' \
+            --exclude='dist/' \
+            --exclude='.git/' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            ./ "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/app/"
 
-      - name: Deploy with Docker Compose
+      - name: 🚀 Deploy Application on Remote Server
         run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "
-            cd ~/app &&
-            export DB_PASSWORD='${{ secrets.DB_PASSWORD }}' &&
-            sudo docker compose down --remove-orphans || true &&
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=no \
+              "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'ENDSSH'
+            set -e
+            cd ~/app
+
+            # Pass secret as env var for docker compose
+            export DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+
+            echo "==> Stopping old containers..."
+            sudo docker compose down --remove-orphans || true
+
+            echo "==> Rebuilding and starting containers..."
             sudo docker compose up -d --build
-          "
+
+            echo "==> Checking running containers..."
+            sudo docker compose ps
+
+            echo "✅ Deployment complete!"
+          ENDSSH
+
+      - name: 🧹 Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
