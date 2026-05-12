@@ -23,14 +23,13 @@ on:
 
 # ─────────────────────────────────────────────────────────────
 # Global environment variables
-# App Server  : mahmud-batch11-application  (13.233.204.205)
-# Runner Server: mahmud-batch11-selfhosted-runner (65.0.94.198)
+# App Server   : mahmud-batch11-application   (13.233.204.205)  ← EC2_HOST secret
+# Runner Server: mahmud-batch11-selfhosted-runner (65.0.94.198) ← runs the workflow
+# Note: App is a pure React frontend — tasks stored in browser localStorage.
+#       No backend/database is required.
 # ─────────────────────────────────────────────────────────────
 env:
   DEPLOY_PATH: /home/ubuntu/ToDoApplicationForCICDPipeline
-  FRONTEND_DEPLOY_PATH: /var/www/todo-app
-  DB_NAME: tododb
-  DB_USER: todo_user
   NODE_VERSION: '20'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -71,7 +70,7 @@ jobs:
 
   # ═══════════════════════════════════════════════════════════
   # JOB 2 — CD: Deploy to Application Server via SSH
-  # Secrets required: EC2_HOST, EC2_USER, EC2_SSH_KEY, DB_PASSWORD
+  # Secrets required: EC2_HOST, EC2_USER, EC2_SSH_KEY
   # ═══════════════════════════════════════════════════════════
   deploy:
     name: 🚀 Deploy to AWS EC2
@@ -171,27 +170,9 @@ jobs:
             echo ""
           ENDSSH
 
-      # ───────────────────────────────────────────────────────
-      - name: 🗄️ Setup PostgreSQL Database
-        run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << "ENDSSH"
-            set -e
-
-            echo "=========================================="
-            echo "Setting up PostgreSQL Database"
-            echo "=========================================="
-
-            # PostgreSQL will run in a Docker container (defined in docker-compose.yml).
-            # Here we ensure the docker network and volume directories exist so that
-            # the container starts cleanly even on a fresh server.
-
-            # Create a persistent data directory for Postgres volume
-            mkdir -p ~/postgres_data
-            echo "Postgres data directory: ~/postgres_data  ✅"
-
-            echo "Database setup preparation completed"
-            echo ""
-          ENDSSH
+      # ── Database setup step removed ──────────────────────────
+      # This is a pure frontend React app. Tasks are persisted in
+      # the browser's localStorage — no database is needed.
 
       # ───────────────────────────────────────────────────────
       - name: 🗂️ Check if Deployment Exists
@@ -241,18 +222,6 @@ jobs:
             echo "=========================================="
 
             cd ${{ env.DEPLOY_PATH }}
-
-            # Write runtime environment variables
-            echo "Setting up .env file..."
-            cat > .env << 'ENVEOF'
-          DB_NAME=${{ env.DB_NAME }}
-          DB_USER=${{ env.DB_USER }}
-          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-          DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@db:5432/${{ env.DB_NAME }}
-          NODE_ENV=production
-          ENVEOF
-
-            echo ".env written ✅"
 
             # Stop any running containers gracefully
             echo ""
