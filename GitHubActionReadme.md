@@ -13,30 +13,16 @@ This document describes the complete CI/CD pipeline implemented for the **ToDo A
 
 ## 📋 Table of Contents
 
-1. [Infrastructure Overview](#-infrastructure-overview)
-2. [Key Concepts](#-key-concepts)
+1. [Key Concepts](#-key-concepts)
    - [What is CI/CD?](#what-is-cicd)
    - [What is a Self-Hosted Runner?](#what-is-a-self-hosted-runner)
    - [Workflow Execution Process](#workflow-execution-process)
+2. [Infrastructure Overview](#-infrastructure-overview)
 3. [Pipeline Architecture](#-pipeline-architecture)
 4. [Pipeline in Action](#-pipeline-in-action)
    - [Successful Execution](#1-successful-pipeline-execution)
    - [Live Application](#2-application-running-on-ec2)
    - [Debugging Failures](#3-debugging-a-failed-pipeline)
-
----
-
-## 🏗️ Infrastructure Overview
-
-The deployment uses **two separate AWS EC2 instances** running Ubuntu 24.04:
-
-| Server Name | Role | Public IP | Private IP |
-|---|---|---|---|
-| `mahmud-batch11-selfhosted-runner` | Runs the GitHub Actions workflow | `65.0.94.198` | `10.0.5.250` |
-| `mahmud-batch11-application` | Hosts the React app, Docker & Nginx | `13.233.204.205` | `10.0.8.97` |
-
-> **Why two servers?**
-> Separating the CI runner from the production environment is a security best practice. The runner server never directly exposes the application — it only SSH's into the application server to trigger deployments.
 
 ---
 
@@ -156,7 +142,22 @@ Developer pushes code
 
 ---
 
+## 🏗️ Infrastructure Overview
+
+The deployment uses **two separate AWS EC2 instances** running Ubuntu 24.04:
+
+| Server Name | Role | Public IP | Private IP |
+|---|---|---|---|
+| `mahmud-batch11-selfhosted-runner` | Runs the GitHub Actions workflow | `65.0.94.198` | `10.0.5.250` |
+| `mahmud-batch11-application` | Hosts the React app, Docker & Nginx | `13.233.204.205` | `10.0.8.97` |
+
+> **Why two servers?**
+> Separating the CI runner from the production environment is a security best practice. The runner server never directly exposes the application — it only SSH's into the application server to trigger deployments.
+
+---
+
 ## 🔄 Pipeline Architecture
+
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
